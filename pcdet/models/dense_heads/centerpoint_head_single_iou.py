@@ -384,7 +384,7 @@ class CenterHead(nn.Module):
 
         return all_targets
 
-    def generate_predicted_boxes(self, batch_size, cls_preds, box_preds, dir_cls_preds=None):
+    def generate_predicted_boxes(self, batch_size, cls_preds, box_preds, iou_preds, dir_cls_preds=None):
         """
         Args:
             batch_size:
