@@ -4,7 +4,8 @@ from .anchor_head_template import AnchorHeadTemplate
 from .point_head_box import PointHeadBox
 from .point_head_simple import PointHeadSimple
 from .point_intra_part_head import PointIntraPartOffsetHead
-from .centerpoint_head_single import CenterHead
+# from .centerpoint_head_single import CenterHead
+from .centerpoint_head_single_iou import CenterHead
 
 
 __all__ = {
