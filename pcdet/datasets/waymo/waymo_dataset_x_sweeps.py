@@ -80,33 +80,6 @@ class WaymoDataset_x_sweeps(DatasetTemplate):
         return sequence_file
 
 
-     # 从raw_data中读取信息，关键是知道waymo raw data的构成，输出我们期望的标准的data和info
-    # tf-record,合计1000/150，每个tf-record 20s,10Hz,合计230k个frame,每个record，分解出~200frame
-    # 每个frame中包含很多信息:传感器标定信息、图像信息、点云信息、2d box、3d box，这里主要存储了点，3d box的信息
-    def get_infos(self, raw_data_path, save_path, num_workers=multiprocessing.cpu_count(), has_label=True, sampled_interval=1):
-        import concurrent.futures as futures
-        from functools import partial
-        from . import waymo_utils
-        print('---------------The waymo sample interval is %d, total sequecnes is %d-----------------'
-              % (sampled_interval, len(self.sample_sequence_list)))
-       
-        process_single_sequence = partial(
-            waymo_utils.process_single_sequence,
-            save_path=save_path, sampled_interval=sampled_interval, has_label=has_label
-        )
-        sample_sequence_file_list = [
-            self.check_sequence_name_with_all_version(raw_data_path / sequence_file)
-            for sequence_file in self.sample_sequence_list
-        ]
-
-        # process_single_sequence(sample_sequence_file_list[0])
-        with futures.ThreadPoolExecutor(num_workers) as executor:
-            sequence_infos = list(tqdm(executor.map(process_single_sequence, sample_sequence_file_list),
-                                       total=len(sample_sequence_file_list)))
-        all_sequences_infos = [item for infos in sequence_infos for item in infos]
-        return all_sequences_infos
-
-
     """
         在对waymo数据进行处理之后，得到了单帧的点云，每一个scene的文件夹，每一个scene对应的pkl文件
         通过这个函数，输出，多帧点云的信息，保存在pkl文件中
@@ -162,15 +135,7 @@ class WaymoDataset_x_sweeps(DatasetTemplate):
 
         return points_sweep.T,times_sweep.T
     
-     # 从npy文件中，读取点云信息，去除掉在不标注范围内的点，返回[x,y,z,intensity,elongation]
-    def get_lidar(self, sequence_name, sample_idx):
-        lidar_file = self.data_path / sequence_name / ('%04d.npy' % sample_idx)
-        point_features = np.load(lidar_file)  # (N, 6): [x, y, z, intensity, elongation, NLZ_flag]
 
-        points_all, NLZ_flag = point_features[:, 0:5], point_features[:, 5]
-        points_all = points_all[NLZ_flag == -1]
-        points_all[:, 3] = np.tanh(points_all[:, 3])
-        return points_all # (N,5):[x,y,z,intensity,elongation]
 
     # 从npy文件中，读取点云信息，去除掉NLZ的点，返回[x,y,z,intensity,time]
     def get_lidar_multi_sweeps(self, sequence_name,sample_idx,sweeps):
@@ -350,7 +315,7 @@ class WaymoDataset_x_sweeps(DatasetTemplate):
         return ap_result_str, ap_dict
     # 从training数据中，提取object对应的点云，用于后面的数据增强
     def create_groundtruth_database(self, info_path, save_path, used_classes=None, split='train', sampled_interval=10,
-                                    processed_data_tag=None):
+                                    processed_data_tag=None, num_sweeps = 3):
         database_save_path = save_path / ('pcdet_gt_database_%s_sampled_%d' % (split, sampled_interval))
         db_info_save_path = save_path / ('pcdet_waymo_dbinfos_%s_sampled_%d.pkl' % (split, sampled_interval))
 
@@ -367,7 +332,8 @@ class WaymoDataset_x_sweeps(DatasetTemplate):
             pc_info = info['point_cloud']
             sequence_name = pc_info['lidar_sequence']
             sample_idx = pc_info['sample_idx']
-            points = self.get_lidar_multi_sweeps(sequence_name, sample_idx)
+            sweeps = info['sweeps']
+            points = self.get_lidar_multi_sweeps(sequence_name, sample_idx,sweeps)
 
             annos = info['annos']
             names = annos['name']
@@ -405,48 +371,6 @@ class WaymoDataset_x_sweeps(DatasetTemplate):
         with open(db_info_save_path, 'wb') as f:
             pickle.dump(all_db_infos, f)
 
-# 初始化waymo数据类,读取id文件，分别存储train info,val info和ground truth data和info
-def create_waymo_infos(dataset_cfg, class_names, data_path, save_path,
-                       raw_data_tag='raw_data', processed_data_tag='waymo_processed_data',
-                       workers=multiprocessing.cpu_count()):
-    dataset = WaymoDataset(
-        dataset_cfg=dataset_cfg, class_names=class_names, root_path=data_path,
-        training=False, logger=common_utils.create_logger()
-    )
-    train_split, val_split = 'train', 'val'
-
-    train_filename = save_path / ('waymo_infos_%s.pkl' % train_split)
-    val_filename = save_path / ('waymo_infos_%s.pkl' % val_split)
-
-    print('---------------Start to generate data infos---------------')
-
-    dataset.set_split(train_split)
-    waymo_infos_train = dataset.get_infos(
-        raw_data_path=data_path / raw_data_tag,
-        save_path=save_path / processed_data_tag, num_workers=workers, has_label=True,
-        sampled_interval=1
-    )
-    with open(train_filename, 'wb') as f:
-        pickle.dump(waymo_infos_train, f)
-    print('----------------Waymo info train file is saved to %s----------------' % train_filename)
-
-    dataset.set_split(val_split)
-    waymo_infos_val = dataset.get_infos(
-        raw_data_path=data_path / raw_data_tag,
-        save_path=save_path / processed_data_tag, num_workers=workers, has_label=True,
-        sampled_interval=1
-    )
-    with open(val_filename, 'wb') as f:
-        pickle.dump(waymo_infos_val, f)
-    print('----------------Waymo info val file is saved to %s----------------' % val_filename)
-
-    print('---------------Start create groundtruth database for data augmentation---------------')
-    dataset.set_split(train_split)
-    dataset.create_groundtruth_database(
-        info_path=train_filename, save_path=save_path, split='train', sampled_interval=10,
-        used_classes=['Vehicle', 'Pedestrian', 'Cyclist']
-    )
-    print('---------------Data preparation Done---------------')
 
 # 初始化waymo数据类,读取id文件，分别存储train info,val info和ground truth data和info
 def create_waymo_infos_multi_sweeps(dataset_cfg, class_names, data_path, save_path,
@@ -461,35 +385,35 @@ def create_waymo_infos_multi_sweeps(dataset_cfg, class_names, data_path, save_pa
     train_filename = save_path / ('waymo_infos_{0}_{1}sweeps.pkl'.format(train_split,num_sweeps))
     val_filename = save_path / ('waymo_infos_{0}_{1}sweeps.pkl'.format(val_split,num_sweeps))
 
-    print('---------------Start to generate data infos---------------')
+    # print('---------------Start to generate data infos---------------')
 
-    dataset.set_split(train_split)
-    waymo_infos_train = dataset.get_infos_multi_sweeps(
-        raw_data_path=data_path / raw_data_tag,
-        save_path=save_path / processed_data_tag, num_workers=workers, has_label=True,
-        sampled_interval=1,
-        num_sweeps = num_sweeps
-    )
-    with open(train_filename, 'wb') as f:
-        pickle.dump(waymo_infos_train, f)
-    print('----------------Waymo info train file is saved to %s----------------' % train_filename)
+    # dataset.set_split(train_split)
+    # waymo_infos_train = dataset.get_infos_multi_sweeps(
+    #     raw_data_path=data_path / raw_data_tag,
+    #     save_path=save_path / processed_data_tag, num_workers=workers, has_label=True,
+    #     sampled_interval=dataset_cfg.SAMPLED_INTERVAL['train'],
+    #     num_sweeps = num_sweeps
+    # )
+    # with open(train_filename, 'wb') as f:
+    #     pickle.dump(waymo_infos_train, f)
+    # print('----------------Waymo info train file is saved to %s----------------' % train_filename)
 
-    dataset.set_split(val_split)
-    waymo_infos_val = dataset.get_infos_multi_sweeps(
-        raw_data_path=data_path / raw_data_tag,
-        save_path=save_path / processed_data_tag, num_workers=workers, has_label=True,
-        sampled_interval=1,
-        num_sweeps = num_sweeps
-    )
-    with open(val_filename, 'wb') as f:
-        pickle.dump(waymo_infos_val, f)
-    print('----------------Waymo info val file is saved to %s----------------' % val_filename)
+    # dataset.set_split(val_split)
+    # waymo_infos_val = dataset.get_infos_multi_sweeps(
+    #     raw_data_path=data_path / raw_data_tag,
+    #     save_path=save_path / processed_data_tag, num_workers=workers, has_label=True,
+    #     sampled_interval=dataset_cfg.SAMPLED_INTERVAL['test'],
+    #     num_sweeps = num_sweeps
+    # )
+    # with open(val_filename, 'wb') as f:
+    #     pickle.dump(waymo_infos_val, f)
+    # print('----------------Waymo info val file is saved to %s----------------' % val_filename)
 
     print('---------------Start create groundtruth database for data augmentation---------------')
     dataset.set_split(train_split)
     dataset.create_groundtruth_database(
         info_path=train_filename, save_path=save_path, split='train', sampled_interval=10,
-        used_classes=['Vehicle', 'Pedestrian', 'Cyclist']
+        used_classes=['Vehicle', 'Pedestrian', 'Cyclist'],num_sweeps = num_sweeps
     )
 
     print('---------------Data preparation Done---------------')

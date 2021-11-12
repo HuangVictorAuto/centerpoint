@@ -13,6 +13,7 @@ from waymo_open_dataset.utils import frame_utils, transform_utils, range_image_u
 from waymo_open_dataset import dataset_pb2
 
 from pyquaternion import Quaternion # add by Huang
+import copy
 
 
 try:
@@ -212,7 +213,7 @@ def process_single_sequence(sequence_file, save_path, sampled_interval, has_labe
             image_info.update({'image_shape_%d' % j: (height, width)})
         info['image'] = image_info
 
-        pose = np.array(frame.pose.transform, dtype=np.float32).reshape(4, 4)
+        pose = np.array(frame.pose.transform).reshape(4, 4)
         info['pose'] = pose
 
         # add by Huang
@@ -281,9 +282,12 @@ def process_single_sequence_multi_sweeps(sequence_file, save_path, sampled_inter
     pkl_file_multi_sweeps = cur_save_dir/('{0}_{1}_sweeps.pkl'.format(sequence_name,num_sweeps))
 
     sequence_infos = pickle.load(open(pkl_file, 'rb'))
+    # print(len(sequence_infos))
     sequence_infos_multi_sweeps = []
 
     for cnt,info in enumerate(sequence_infos):
+        if cnt % sampled_interval != 0:
+            continue
         ref_pc_info = info['point_cloud']
         ref_frame_id = info['frame_id']
         ref_image = info['image']
@@ -292,7 +296,7 @@ def process_single_sequence_multi_sweeps(sequence_file, save_path, sampled_inter
         ref_timestamp = info['timestamp'] * 1e-6
         ref_annos = info['annos']
         ref_num_points_of_each_lidar = info['num_points_of_each_lidar']
-        sequence_info_multi_sweeps = info
+        sequence_info_multi_sweeps = copy.deepcopy(info)
         sequence_info_multi_sweeps.update({'ref_world_to_car':ref_world_to_car,'sweeps':[]})
 
         prev_id = cnt
@@ -301,12 +305,12 @@ def process_single_sequence_multi_sweeps(sequence_file, save_path, sampled_inter
         while len(sweeps) < num_sweeps-1:
             if prev_id <=0:
                 if len(sweeps) == 0:
-                    sweeps = {
+                    sweeps = [{
                         'point_cloud':ref_pc_info,
                         'transform_matrix':None,
                         'frame_id':ref_frame_id,
                         'time_lag':0
-                    }
+                    }]
                 else:
                     sweeps.append(sweeps[-1])
             else:
@@ -332,7 +336,7 @@ def process_single_sequence_multi_sweeps(sequence_file, save_path, sampled_inter
         
         sequence_info_multi_sweeps['sweeps'] = sweeps
 
-    sequence_infos_multi_sweeps.append(sequence_info_multi_sweeps)          
+        sequence_infos_multi_sweeps.append(sequence_info_multi_sweeps)          
 
     with open(pkl_file_multi_sweeps, 'wb') as f:
         pickle.dump(sequence_infos_multi_sweeps, f)
